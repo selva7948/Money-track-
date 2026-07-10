@@ -5,6 +5,7 @@ import {
   Filter, Download, ChevronLeft, ChevronRight, MapPin, Tag,
   Store, Calendar, CreditCard, FileText, Trash2, ChevronDown, Landmark, Settings, UploadCloud, DownloadCloud
 } from "lucide-react";
+import { Analytics } from '@vercel/analytics/react';
 
 const CATEGORIES = [
   { name: "Salary", type: "income", color: "#22C55E" },
@@ -190,6 +191,7 @@ export default function App() {
           />
         )}
       </div>
+      <Analytics />
     </div>
   );
 }
