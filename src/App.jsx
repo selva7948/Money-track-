@@ -3,7 +3,8 @@ import {
   Home, Plus, BarChart3, Users, Search, X, Moon, Sun,
   TrendingUp, TrendingDown, Wallet, PiggyBank, AlertTriangle,
   Filter, Download, ChevronLeft, ChevronRight, MapPin, Tag,
-  Store, Calendar, CreditCard, FileText, Trash2, ChevronDown, Landmark, Settings, UploadCloud, DownloadCloud
+  Store, Calendar, CreditCard, FileText, Trash2, ChevronDown, Landmark, Settings, UploadCloud, DownloadCloud,
+  History as History_Icon
 } from "lucide-react";
 
 const CATEGORIES = [
@@ -267,8 +268,8 @@ export default function App() {
           {tab === "reports" && (
             <Reports transactions={transactions} dark={dark} />
           )}
-          {tab === "people" && (
-            <PeopleMerchants transactions={transactions} dark={dark} />
+          {tab === "history" && (
+            <History transactions={transactions} dark={dark} onEdit={(t) => { setEditTxn(t); setShowAdd(true); }} onDelete={deleteTransaction} />
           )}
           {tab === "budgets" && (
             <Budgets budgets={budgets} setBudgets={setBudgets} categories={allCategories} transactions={transactions} dark={dark} />
@@ -336,7 +337,7 @@ export default function App() {
 }
 
 function Header({ dark, setDark, tab, onSettings }) {
-  const titles = { dashboard: "Dashboard", reports: "Reports", people: "People & Merchants", budgets: "Budgets" };
+  const titles = { dashboard: "Dashboard", reports: "Reports", history: "History", budgets: "Budgets" };
   return (
     <div style={{ ...S.header, borderColor: dark ? "#1E293B" : "#E2E8F0" }}>
       <div>
@@ -360,7 +361,7 @@ function BottomNav({ tab, setTab, dark, onAdd }) {
     { id: "dashboard", icon: Home, label: "Home" },
     { id: "reports", icon: BarChart3, label: "Reports" },
     { id: "add", icon: Plus, label: "Add" },
-    { id: "people", icon: Users, label: "People" },
+    { id: "history", icon: History_Icon, label: "History" },
     { id: "budgets", icon: PiggyBank, label: "Budget" },
   ];
   return (
@@ -511,8 +512,11 @@ function TxnRow({ t, dark, onEdit, onDelete }) {
           <Tag size={16} color={color} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: dark ? "#F1F5F9" : "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {t.category}{t.merchant ? ` · ${t.merchant}` : ""}
+          <div style={{ fontSize: 14, fontWeight: 700, color: dark ? "#F1F5F9" : "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{t.category}{t.merchant ? ` · ${t.merchant}` : ""}</span>
+            {t.splitDetails && t.splitDetails.length > 0 && (
+              <span style={{ fontSize: 9, fontWeight: 800, color: "#8B5CF6", background: "#8B5CF620", padding: "2px 6px", borderRadius: 6, flexShrink: 0 }}>SPLIT</span>
+            )}
           </div>
           <div style={{ fontSize: 11, color: dark ? "#64748B" : "#94A3B8", display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
             <span>{new Date(t.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</span>
@@ -585,10 +589,25 @@ function TransactionDetailModal({ t, dark, onClose, onEdit, onDelete }) {
           <DetailRow icon={CreditCard} label="Payment Method" value={t.paymentMethod} dark={dark} />
           <DetailRow icon={Landmark} label="Bank" value={t.bank} dark={dark} />
           <DetailRow icon={Store} label="Merchant / Shop" value={t.merchant} dark={dark} />
-          <DetailRow icon={Users} label="Person / Group" value={t.person} dark={dark} />
+          {!(t.splitDetails && t.splitDetails.length > 0) && <DetailRow icon={Users} label="Person / Group" value={t.person} dark={dark} />}
           <DetailRow icon={MapPin} label="Location" value={t.location} dark={dark} />
           <DetailRow icon={FileText} label="Notes" value={t.notes} dark={dark} />
         </div>
+
+        {t.splitDetails && t.splitDetails.length > 0 && (
+          <div style={{ ...S.card, background: dark ? "#1A2028" : "#F8FAFC", marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+              <Users size={14} color="#8B5CF6" />
+              <span style={{ fontSize: 12, fontWeight: 700, color: dark ? "#F1F5F9" : "#0F172A" }}>Split between {t.splitDetails.length} people</span>
+            </div>
+            {t.splitDetails.map((p) => (
+              <div key={p.name} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${dark ? "#1E293B" : "#F1F5F9"}` }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: dark ? "#CBD5E1" : "#334155" }}>{p.name}</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: dark ? "#F1F5F9" : "#0F172A" }}>{formatINR(p.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {!confirmDelete ? (
           <div style={{ display: "flex", gap: 10 }}>
@@ -741,96 +760,74 @@ function Reports({ transactions, dark }) {
   );
 }
 
-function PeopleMerchants({ transactions, dark }) {
-  const [view, setView] = useState("person");
+function History({ transactions, dark, onEdit, onDelete }) {
   const [search, setSearch] = useState("");
+  const [filterType, setFilterType] = useState("all");
 
-  const grouped = useMemo(() => {
-    const map = {};
-    transactions.filter((t) => t.type === "expense").forEach((t) => {
-      const key = view === "person" ? (t.person || "Unspecified") : view === "merchant" ? (t.merchant || "Unspecified") : (t.bank || "Unspecified");
-      if (!map[key]) map[key] = { total: 0, count: 0, items: [] };
-      map[key].total += Number(t.amount);
-      map[key].count += 1;
-      map[key].items.push(t);
-    });
-    return Object.entries(map)
-      .filter(([name]) => name.toLowerCase().includes(search.toLowerCase()))
-      .sort((a, b) => b[1].total - a[1].total);
-  }, [transactions, view, search]);
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return [...transactions]
+      .filter((t) => filterType === "all" || t.type === filterType)
+      .filter((t) => {
+        if (!q) return true;
+        return (
+          (t.category || "").toLowerCase().includes(q) ||
+          (t.merchant || "").toLowerCase().includes(q) ||
+          (t.person || "").toLowerCase().includes(q) ||
+          (t.bank || "").toLowerCase().includes(q) ||
+          (t.location || "").toLowerCase().includes(q) ||
+          (t.notes || "").toLowerCase().includes(q) ||
+          (t.paymentMethod || "").toLowerCase().includes(q) ||
+          String(t.amount).includes(q)
+        );
+      })
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [transactions, search, filterType]);
 
-  const [expanded, setExpanded] = useState(null);
+  const totalShown = filtered.reduce((s, t) => s + (t.type === "income" ? Number(t.amount) : -Number(t.amount)), 0);
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        <button
-          onClick={() => setView("person")}
-          style={{ ...S.pill, flex: 1, background: view === "person" ? "#3B82F6" : dark ? "#1A2028" : "#fff", color: view === "person" ? "#fff" : dark ? "#94A3B8" : "#64748B" }}
-        >
-          <Users size={13} style={{ marginRight: 5, verticalAlign: -2 }} /> By Person / Group
-        </button>
-        <button
-          onClick={() => setView("merchant")}
-          style={{ ...S.pill, flex: 1, background: view === "merchant" ? "#3B82F6" : dark ? "#1A2028" : "#fff", color: view === "merchant" ? "#fff" : dark ? "#94A3B8" : "#64748B" }}
-        >
-          <Store size={13} style={{ marginRight: 5, verticalAlign: -2 }} /> By Merchant
-        </button>
-        <button
-          onClick={() => setView("bank")}
-          style={{ ...S.pill, flex: 1, background: view === "bank" ? "#3B82F6" : dark ? "#1A2028" : "#fff", color: view === "bank" ? "#fff" : dark ? "#94A3B8" : "#64748B" }}
-        >
-          <Landmark size={13} style={{ marginRight: 5, verticalAlign: -2 }} /> By Bank
-        </button>
-      </div>
-
-      <div style={{ ...S.searchBox, background: dark ? "#1A2028" : "#fff", marginBottom: 12 }}>
+      <div style={{ ...S.searchBox, background: dark ? "#1A2028" : "#fff", marginBottom: 10 }}>
         <Search size={15} color={dark ? "#64748B" : "#94A3B8"} />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder={view === "person" ? "Search person or group..." : view === "merchant" ? "Search merchant..." : "Search bank..."}
+          placeholder="Search category, merchant, person, bank, notes..."
           style={{ ...S.searchInput, color: dark ? "#F1F5F9" : "#0F172A" }}
         />
+        {search && (
+          <button onClick={() => setSearch("")} style={{ background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>
+            <X size={15} color={dark ? "#64748B" : "#94A3B8"} />
+          </button>
+        )}
       </div>
 
-      {grouped.length === 0 && (
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {["all", "expense", "income"].map((f) => (
+          <button
+            key={f}
+            onClick={() => setFilterType(f)}
+            style={{ ...S.pill, flex: 1, background: filterType === f ? "#3B82F6" : dark ? "#1A2028" : "#fff", color: filterType === f ? "#fff" : dark ? "#94A3B8" : "#64748B" }}
+          >
+            {f === "all" ? "All" : f === "expense" ? "Expenses" : "Income"}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: dark ? "#64748B" : "#94A3B8" }}>{filtered.length} transaction{filtered.length !== 1 ? "s" : ""}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: totalShown < 0 ? "#EF4444" : "#22C55E" }}>{formatINR(totalShown)}</span>
+      </div>
+
+      {filtered.length === 0 && (
         <div style={{ textAlign: "center", padding: 30, color: dark ? "#475569" : "#94A3B8", fontSize: 13 }}>
-          No {view === "person" ? "people/groups" : view === "merchant" ? "merchants" : "banks"} tagged yet.
+          No transactions found.
         </div>
       )}
 
-      {grouped.map(([name, data]) => (
-        <div key={name} style={{ ...S.card, background: dark ? "#1A2028" : "#fff", marginBottom: 10, cursor: "pointer" }} onClick={() => setExpanded(expanded === name ? null : name)}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 36, height: 36, borderRadius: 10, background: "#3B82F620", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {view === "person" ? <Users size={16} color="#3B82F6" /> : view === "merchant" ? <Store size={16} color="#3B82F6" /> : <Landmark size={16} color="#3B82F6" />}
-              </div>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: dark ? "#F1F5F9" : "#0F172A" }}>{name}</div>
-                <div style={{ fontSize: 11, color: dark ? "#64748B" : "#94A3B8" }}>{data.count} transaction{data.count > 1 ? "s" : ""}</div>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 15, fontWeight: 800, color: dark ? "#F1F5F9" : "#0F172A" }}>{formatINR(data.total)}</span>
-              <ChevronDown size={16} color={dark ? "#64748B" : "#94A3B8"} style={{ transform: expanded === name ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
-            </div>
-          </div>
-          {expanded === name && (
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${dark ? "#293241" : "#E2E8F0"}` }}>
-              {data.items.sort((a, b) => new Date(b.date) - new Date(a.date)).map((t) => (
-                <div key={t.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 12 }}>
-                  <div style={{ color: dark ? "#94A3B8" : "#64748B" }}>
-                    <div>{new Date(t.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })} · {t.category}</div>
-                    {t.location && <div style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, marginTop: 2 }}><MapPin size={9} />{t.location}</div>}
-                  </div>
-                  <span style={{ color: "#EF4444", fontWeight: 700 }}>{formatINR(t.amount)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      {filtered.map((t) => (
+        <TxnRow key={t.id} t={t} dark={dark} onEdit={() => onEdit(t)} onDelete={() => onDelete(t.id)} />
       ))}
     </div>
   );
@@ -1184,8 +1181,8 @@ function AddTransactionModal({ categories, onClose, onSave, onAddCategory, dark,
   const [showNewCat, setShowNewCat] = useState(false);
   const [newPM, setNewPM] = useState("");
   const [showNewPM, setShowNewPM] = useState(false);
-  const [splitMode, setSplitMode] = useState(false);
-  const [splitPeople, setSplitPeople] = useState([]); // [{name, amount}]
+  const [splitMode, setSplitMode] = useState(!!editTxn?.splitDetails);
+  const [splitPeople, setSplitPeople] = useState(editTxn?.splitDetails || []); // [{name, amount}]
 
   const filteredCats = categories.filter((c) => c.type === type || type === "expense");
   const availableCats = type === "income" ? categories.filter((c) => c.type === "income" || c.name === "Salary") : categories.filter((c) => c.type === "expense");
@@ -1202,11 +1199,12 @@ function AddTransactionModal({ categories, onClose, onSave, onAddCategory, dark,
 
     if (splitMode && splitPeople.length > 0) {
       splitPeople.forEach((p) => { if (onAddPerson) onAddPerson(p.name); });
-      const txns = splitPeople.map((p) => ({
-        type, amount: Number(p.amount), category, date, paymentMethod, bank: bank.trim(),
-        merchant: merchant.trim(), person: p.name, notes: notes.trim(), location: location.trim(),
-      }));
-      onSave(txns);
+      onSave({
+        id: editTxn?.id,
+        type, amount: Number(amount), category, date, paymentMethod, bank: bank.trim(),
+        merchant: merchant.trim(), person: splitPeople.map((p) => p.name).join(", "), notes: notes.trim(), location: location.trim(),
+        splitDetails: splitPeople.map((p) => ({ name: p.name, amount: Number(p.amount) })),
+      });
       return;
     }
 
@@ -1215,6 +1213,7 @@ function AddTransactionModal({ categories, onClose, onSave, onAddCategory, dark,
       id: editTxn?.id,
       type, amount: Number(amount), category, date, paymentMethod, bank: bank.trim(),
       merchant: merchant.trim(), person: person.trim(), notes: notes.trim(), location: location.trim(),
+      splitDetails: null,
     });
   };
 
