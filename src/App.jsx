@@ -4,7 +4,7 @@ import {
   TrendingUp, TrendingDown, Wallet, PiggyBank, AlertTriangle,
   Filter, Download, ChevronLeft, ChevronRight, MapPin, Tag,
   Store, Calendar, CreditCard, FileText, Trash2, ChevronDown, Landmark, Settings, UploadCloud, DownloadCloud,
-  History as History_Icon
+  History as History_Icon, Camera
 } from "lucide-react";
 
 const CATEGORIES = [
@@ -38,6 +38,62 @@ function todayISO() {
   const d = new Date();
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 16);
+}
+
+function toLocalDatetimeInput(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function loadTesseractScript() {
+  return new Promise((resolve, reject) => {
+    if (window.Tesseract) return resolve();
+    const existing = document.getElementById("tesseract-script");
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", reject);
+      return;
+    }
+    const script = document.createElement("script");
+    script.id = "tesseract-script";
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js";
+    script.onload = () => resolve();
+    script.onerror = reject;
+    document.body.appendChild(script);
+  });
+}
+
+function parseReceiptText(text) {
+  const clean = (text || "").replace(/\r/g, "");
+  const result = { amount: null, date: null, merchant: null, type: null };
+
+  const amtMatch = clean.match(/(?:₹|Rs\.?|INR)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
+  if (amtMatch) result.amount = parseFloat(amtMatch[1].replace(/,/g, ""));
+
+  if (/received|credited|deposit/i.test(clean)) result.type = "income";
+  else if (/paid|debited|sent|payment successful/i.test(clean)) result.type = "expense";
+
+  const merchantMatch =
+    clean.match(/(?:Paid to|Payment to|To)\s*[:\-]?\s*([A-Za-z0-9&.,'\s]{2,40})/i) ||
+    clean.match(/(?:Received from|From)\s*[:\-]?\s*([A-Za-z0-9&.,'\s]{2,40})/i);
+  if (merchantMatch) result.merchant = merchantMatch[1].split("\n")[0].trim();
+
+  const monthDate = clean.match(/(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-zA-Z]*\s+\d{4})/i);
+  const slashDate = clean.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+  if (monthDate) {
+    const d = new Date(monthDate[1]);
+    if (!isNaN(d)) result.date = toLocalDatetimeInput(d);
+  } else if (slashDate) {
+    const parts = slashDate[1].split(/[\/\-]/);
+    let [dd, mm, yy] = parts;
+    if (yy.length === 2) yy = "20" + yy;
+    const d = new Date(`${yy}-${mm}-${dd}`);
+    if (!isNaN(d)) result.date = toLocalDatetimeInput(d);
+  } else if (/today/i.test(clean)) {
+    result.date = toLocalDatetimeInput(new Date());
+  }
+
+  return result;
 }
 
 async function loadData() {
@@ -1183,6 +1239,27 @@ function AddTransactionModal({ categories, onClose, onSave, onAddCategory, dark,
   const [showNewPM, setShowNewPM] = useState(false);
   const [splitMode, setSplitMode] = useState(!!editTxn?.splitDetails);
   const [splitPeople, setSplitPeople] = useState(editTxn?.splitDetails || []); // [{name, amount}]
+  const [ocrStatus, setOcrStatus] = useState(null); // null | loading | success | partial | error
+  const screenshotInputRef = React.useRef(null);
+
+  const handleScreenshotFile = async (file) => {
+    if (!file) return;
+    setOcrStatus("loading");
+    try {
+      await loadTesseractScript();
+      const result = await window.Tesseract.recognize(file, "eng");
+      const text = result?.data?.text || "";
+      const parsed = parseReceiptText(text);
+      if (parsed.amount) setAmount(String(parsed.amount));
+      if (parsed.date) setDate(parsed.date);
+      if (parsed.merchant) setMerchant(parsed.merchant);
+      if (parsed.type) setType(parsed.type);
+      setPaymentMethod((prev) => prev || "UPI");
+      setOcrStatus(parsed.amount ? "success" : "partial");
+    } catch (err) {
+      setOcrStatus("error");
+    }
+  };
 
   const filteredCats = categories.filter((c) => c.type === type || type === "expense");
   const availableCats = type === "income" ? categories.filter((c) => c.type === "income" || c.name === "Salary") : categories.filter((c) => c.type === "expense");
@@ -1226,6 +1303,34 @@ function AddTransactionModal({ categories, onClose, onSave, onAddCategory, dark,
             <X size={18} color={dark ? "#94A3B8" : "#64748B"} />
           </button>
         </div>
+
+        {!editTxn && (
+          <div style={{ marginBottom: 16 }}>
+            <input
+              type="file"
+              accept="image/*"
+              ref={screenshotInputRef}
+              onChange={(e) => { const f = e.target.files[0]; handleScreenshotFile(f); e.target.value = ""; }}
+              style={{ display: "none" }}
+            />
+            <button
+              onClick={() => screenshotInputRef.current.click()}
+              disabled={ocrStatus === "loading"}
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: 12, borderRadius: 12, border: "1.5px dashed #3B82F6", background: dark ? "#3B82F615" : "#3B82F60D", color: "#3B82F6", fontSize: 13, fontWeight: 700, cursor: ocrStatus === "loading" ? "default" : "pointer", opacity: ocrStatus === "loading" ? 0.7 : 1 }}
+            >
+              <Camera size={16} /> {ocrStatus === "loading" ? "Reading screenshot..." : "Scan Payment Screenshot"}
+            </button>
+            {ocrStatus === "success" && (
+              <div style={{ fontSize: 11, color: "#22C55E", marginTop: 6 }}>✓ Filled from screenshot — please check before saving.</div>
+            )}
+            {ocrStatus === "partial" && (
+              <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 6 }}>Could only read some details — please fill the rest.</div>
+            )}
+            {ocrStatus === "error" && (
+              <div style={{ fontSize: 11, color: "#EF4444", marginTop: 6 }}>Couldn't read the screenshot — please fill manually.</div>
+            )}
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
           <button
