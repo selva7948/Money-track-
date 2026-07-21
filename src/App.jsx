@@ -65,33 +65,89 @@ function loadTesseractScript() {
 
 function parseReceiptText(text) {
   const clean = (text || "").replace(/\r/g, "");
-  const result = { amount: null, date: null, merchant: null, type: null };
+  const result = { amount: null, date: null, merchant: null, type: null, bank: null, notes: null };
 
-  const amtMatch = clean.match(/(?:₹|Rs\.?|INR)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
-  if (amtMatch) result.amount = parseFloat(amtMatch[1].replace(/,/g, ""));
+  // --- Amount: try ₹/Rs/INR symbol first, but OCR often misreads ₹ in bold fonts ---
+  let amtMatch = clean.match(/(?:₹|Rs\.?|INR)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
+  if (amtMatch) {
+    result.amount = parseFloat(amtMatch[1].replace(/,/g, ""));
+  } else {
+    // Fallback: amount usually sits alone on its own line, right before
+    // "Pay again" / "Completed" / "Pending" / "Failed" in GPay/PhonePe screenshots.
+    const statusIdx = clean.search(/Pay again|Completed|Pending|Failed|Successful/i);
+    const zone = statusIdx > -1 ? clean.slice(0, statusIdx) : clean.slice(0, 250);
+    const lines = zone.split("\n").map((l) => l.trim()).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = lines[i].match(/^[^\d]{0,2}([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)[^\d]{0,2}$/);
+      if (m) {
+        const val = parseFloat(m[1].replace(/,/g, ""));
+        if (val > 0 && val < 10000000) { result.amount = val; break; }
+      }
+    }
+  }
 
-  if (/received|credited|deposit/i.test(clean)) result.type = "income";
-  else if (/paid|debited|sent|payment successful/i.test(clean)) result.type = "expense";
+  // --- Type: GPay/PhonePe "send money" screenshots are almost always expenses ---
+  if (/received ₹|money received|received from|credited to your account/i.test(clean)) result.type = "income";
+  else result.type = "expense";
 
+  // --- Merchant: prefer the "To:" detail line over the truncated top title ---
   const merchantMatch =
-    clean.match(/(?:Paid to|Payment to|To)\s*[:\-]?\s*([A-Za-z0-9&.,'\s]{2,40})/i) ||
-    clean.match(/(?:Received from|From)\s*[:\-]?\s*([A-Za-z0-9&.,'\s]{2,40})/i);
-  if (merchantMatch) result.merchant = merchantMatch[1].split("\n")[0].trim();
+    clean.match(/To:\s*([A-Za-z0-9&.,'\s]{2,60}?)(?:\n|PhonePe|Google Pay|UPI|•|$)/i) ||
+    clean.match(/(?:Paid to|Payment to)\s*[:\-]?\s*([A-Za-z0-9&.,'\s]{2,60}?)(?:\n|PhonePe|Google Pay|UPI|•|$)/i) ||
+    clean.match(/(?:Received from)\s*[:\-]?\s*([A-Za-z0-9&.,'\s]{2,60}?)(?:\n|PhonePe|Google Pay|UPI|•|$)/i) ||
+    clean.match(/^To\s+([A-Za-z0-9&.,'\s]{2,60})/im);
+  if (merchantMatch) result.merchant = merchantMatch[1].replace(/\.\.\.$/, "").trim();
 
+  // --- Bank: match common bank names/keywords anywhere in the text ---
+  const bankList = [
+    { re: /Equitas/i, name: "Equitas" },
+    { re: /IDFC/i, name: "IDFC Credit Card" },
+    { re: /Airtel/i, name: "Airtel" },
+    { re: /\bSBI\b/i, name: "SBI" },
+    { re: /Axis/i, name: "Axis Bank" },
+    { re: /HDFC/i, name: "HDFC" },
+    { re: /ICICI/i, name: "ICICI" },
+    { re: /Kotak/i, name: "Kotak" },
+    { re: /Canara/i, name: "Canara" },
+    { re: /\bPNB\b/i, name: "PNB" },
+    { re: /Bank of Baroda|\bBOB\b/i, name: "BOB" },
+  ];
+  for (const b of bankList) {
+    if (b.re.test(clean)) { result.bank = b.name; break; }
+  }
+
+  // --- Date + time ---
   const monthDate = clean.match(/(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-zA-Z]*\s+\d{4})/i);
   const slashDate = clean.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+  const timeMatch = clean.match(/(\d{1,2}):(\d{2})\s?(am|pm)/i);
+
+  let baseDate = null;
   if (monthDate) {
     const d = new Date(monthDate[1]);
-    if (!isNaN(d)) result.date = toLocalDatetimeInput(d);
+    if (!isNaN(d)) baseDate = d;
   } else if (slashDate) {
     const parts = slashDate[1].split(/[\/\-]/);
     let [dd, mm, yy] = parts;
     if (yy.length === 2) yy = "20" + yy;
     const d = new Date(`${yy}-${mm}-${dd}`);
-    if (!isNaN(d)) result.date = toLocalDatetimeInput(d);
+    if (!isNaN(d)) baseDate = d;
   } else if (/today/i.test(clean)) {
-    result.date = toLocalDatetimeInput(new Date());
+    baseDate = new Date();
   }
+
+  if (baseDate && timeMatch) {
+    let hh = parseInt(timeMatch[1], 10);
+    const mins = parseInt(timeMatch[2], 10);
+    const isPM = /pm/i.test(timeMatch[3]);
+    if (isPM && hh !== 12) hh += 12;
+    if (!isPM && hh === 12) hh = 0;
+    baseDate.setHours(hh, mins, 0, 0);
+  }
+  if (baseDate) result.date = toLocalDatetimeInput(baseDate);
+
+  // --- UPI reference, for notes (best-effort, non-critical) ---
+  const upiRef = clean.match(/UPI transaction ID\s*\n?\s*([0-9]{6,})/i) || clean.match(/UPI Ref(?:erence)?(?:\sNo\.?)?[:\s]*([0-9]{6,})/i);
+  if (upiRef) result.notes = `UPI Ref: ${upiRef[1]}`;
 
   return result;
 }
@@ -1254,6 +1310,8 @@ function AddTransactionModal({ categories, onClose, onSave, onAddCategory, dark,
       if (parsed.date) setDate(parsed.date);
       if (parsed.merchant) setMerchant(parsed.merchant);
       if (parsed.type) setType(parsed.type);
+      if (parsed.bank) setBank(parsed.bank);
+      if (parsed.notes) setNotes((prev) => prev || parsed.notes);
       setPaymentMethod((prev) => prev || "UPI");
       setOcrStatus(parsed.amount ? "success" : "partial");
     } catch (err) {
